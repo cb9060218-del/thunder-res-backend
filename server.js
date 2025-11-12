@@ -1,54 +1,83 @@
 import express from "express";
 import cors from "cors";
-import pg from "pg";
+import pkg from "pg";
 import dotenv from "dotenv";
 
 dotenv.config();
+const { Pool } = pkg;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const db = new pg.Pool({
+const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
 });
-// ✅ Test database connection on startup
-db.connect()
+
+// ✅ Test DB
+pool.connect()
   .then(() => console.log("✅ Database connected successfully"))
-  .catch((err) => console.error("❌ Database connection failed:", err));
+  .catch((err) => console.error("❌ DB connection error:", err));
 
-
-// ✅ Root route test
-app.get("/", (req, res) => {
-  res.send("Thunder QR Backend Running ⚡");
-});
-
-// ✅ Fetch all menu items
+// ✅ Get menu
 app.get("/api/menu", async (req, res) => {
-  try {
-    const result = await db.query("SELECT * FROM menu_items WHERE available=true ORDER BY id ASC");
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Error fetching menu");
-  }
+  const result = await pool.query("SELECT * FROM menu_items ORDER BY id ASC");
+  res.json(result.rows);
 });
 
 // ✅ Add new menu item
 app.post("/api/menu", async (req, res) => {
   const { name, price, category, image_url } = req.body;
+  await pool.query(
+    "INSERT INTO menu_items (name, price, category, image_url) VALUES ($1, $2, $3, $4)",
+    [name, price, category, image_url]
+  );
+  res.json({ success: true });
+});
+
+// ✅ Create new order
+app.post("/api/order", async (req, res) => {
+  const client = await pool.connect();
   try {
-    await db.query(
-      "INSERT INTO menu_items (name, price, category, image_url) VALUES ($1, $2, $3, $4)",
-      [name, price, category, image_url]
+    const { table_no, items } = req.body;
+    let total = 0;
+    items.forEach((i) => (total += i.qty * i.price || 0));
+
+    // 1️⃣ Create order
+    const orderResult = await client.query(
+      "INSERT INTO orders (table_no, total, status) VALUES ($1, $2, 'pending') RETURNING id",
+      [table_no, total]
     );
-    res.json({ success: true });
+
+    const orderId = orderResult.rows[0].id;
+
+    // 2️⃣ Add items
+    for (const item of items) {
+      await client.query(
+        "INSERT INTO order_items (order_id, item_id, quantity) VALUES ($1, $2, $3)",
+        [orderId, item.id, item.qty]
+      );
+    }
+
+    res.json({ success: true, order_id: orderId });
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Error adding item");
+    console.error("❌ Order error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  } finally {
+    client.release();
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server live on ${PORT}`));
+// ✅ Get all orders
+app.get("/api/orders", async (req, res) => {
+  const result = await pool.query("SELECT * FROM orders ORDER BY created_at DESC");
+  res.json(result.rows);
+});
+
+// ✅ Mark order ready
+app.put("/api/orders/:id/ready", async (req, res) => {
+  await pool.query("UPDATE orders SET status='ready' WHERE id=$1", [req.params.id]);
+  res.json({ success: true });
+});
+
+app.listen(10000, () => console.log("⚡ Server live on port 10000"));
