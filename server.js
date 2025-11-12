@@ -68,11 +68,37 @@ app.post("/api/order", async (req, res) => {
   }
 });
 
-// ✅ Get all orders
+// ✅ Get all orders with item details
 app.get("/api/orders", async (req, res) => {
-  const result = await pool.query("SELECT * FROM orders ORDER BY created_at DESC");
-  res.json(result.rows);
+  try {
+    const result = await pool.query(`
+      SELECT 
+        o.id AS order_id,
+        o.table_no,
+        o.total,
+        o.status,
+        o.created_at,
+        json_agg(
+          json_build_object(
+            'name', m.name,
+            'price', m.price,
+            'quantity', oi.quantity
+          )
+        ) AS items
+      FROM orders o
+      JOIN order_items oi ON o.id = oi.order_id
+      JOIN menu_items m ON oi.item_id = m.id
+      GROUP BY o.id
+      ORDER BY o.created_at DESC;
+    `);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ Error fetching orders:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
+
 
 // ✅ Mark order ready
 app.put("/api/orders/:id/ready", async (req, res) => {
